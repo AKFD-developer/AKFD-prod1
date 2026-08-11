@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "react": "^19.2.8",
+    "vite-plugin-pwa": "^0.20.x",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
