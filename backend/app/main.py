@@ -30,14 +30,15 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Material Request Portal", version="1.0.0")
 
 # Enable CORS for frontend
+origins = [o.strip() for o in settings.FRONTEND_ORIGINS.split(",")] if settings.FRONTEND_ORIGINS != "*" else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # Seed default field configurations on startup if table is empty
 @app.on_event("startup")
 def seed_default_fields():
