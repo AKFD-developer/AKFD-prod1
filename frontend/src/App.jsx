@@ -31,6 +31,31 @@ export default function App() {
   const [isNewClient, setIsNewClient] = useState(false);
   const [customClientName, setCustomClientName] = useState('');
   const [customClientDetails, setCustomClientDetails] = useState('');
+  const [itemsList, setItemsList] = useState([
+    { id: Date.now(), values: {}, isNewMaterial: false, customMaterialName: '' }
+  ]);
+
+  const handleAddItemRow = () => {
+    setItemsList([...itemsList, { id: Date.now(), values: {}, isNewMaterial: false, customMaterialName: '' }]);
+  };
+  
+  const handleRemoveItemRow = (id) => {
+    if (itemsList.length > 1) {
+      setItemsList(itemsList.filter(item => item.id !== id));
+    }
+  };
+  
+  const handleUpdateItemRowValue = (id, key, val) => {
+    setItemsList(itemsList.map(item => item.id === id ? { ...item, values: { ...item.values, [key]: val } } : item));
+  };
+  
+  const handleUpdateItemRowCustomFlag = (id, flag, customNameVal) => {
+    setItemsList(itemsList.map(item => item.id === id ? { 
+      ...item, 
+      isNewMaterial: flag, 
+      customMaterialName: customNameVal !== undefined ? customNameVal : item.customMaterialName 
+    } : item));
+  };
   
   // Dashboard & Navigation state
   const [activeTab, setActiveTab] = useState('requests'); // requests, fields, settings
@@ -362,22 +387,39 @@ export default function App() {
         finalClientName = clientData.name;
       }
 
-      const payloadValues = { ...newRequestValues };
-      if (isNewClient) {
-        payloadValues['Client Name'] = finalClientName;
+      let successCount = 0;
+      for (const item of itemsList) {
+        let materialName = item.values['Required Material Name'] || '';
+        if (item.isNewMaterial && item.customMaterialName.trim()) {
+          materialName = item.customMaterialName.trim();
+        }
+
+        const payloadValues = { 
+          ...newRequestValues, 
+          ...item.values,
+          'Required Material Name': materialName
+        };
+        if (isNewClient) {
+          payloadValues['Client Name'] = finalClientName;
+        }
+
+        const res = await fetch(`${API_BASE}/requests`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requester_name: user.username,
+            values: payloadValues
+          })
+        });
+        if (res.ok) {
+          successCount++;
+        }
       }
 
-      const res = await fetch(`${API_BASE}/requests`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requester_name: user.username,
-          values: payloadValues
-        })
-      });
-      if (res.ok) {
-        showNotification('Material request submitted successfully!', 'success');
+      if (successCount > 0) {
+        showNotification(`Material request(s) submitted successfully! Logged ${successCount} items.`, 'success');
         setNewRequestValues({});
+        setItemsList([{ id: Date.now(), values: {}, isNewMaterial: false, customMaterialName: '' }]);
         setIsNewMaterial(false);
         setIsNewClient(false);
         setCustomClientName('');
@@ -386,8 +428,7 @@ export default function App() {
         fetchStock();
         fetchSheetsStatus();
       } else {
-        const errData = await res.json();
-        showNotification(errData.detail || 'Failed to submit request', 'danger');
+        showNotification('Failed to submit material requests', 'danger');
       }
     } catch (err) {
       showNotification('Error connecting to API server.', 'danger');
@@ -596,6 +637,25 @@ export default function App() {
     }
   };
 
+  const triggerSyncFromSheets = async () => {
+    showNotification('Pulling updates from Google Sheets...', 'info');
+    try {
+      const res = await fetch(`${API_BASE}/sheets/pull`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        showNotification(data.message || 'Synced successfully from Sheets.', 'success');
+        fetchRequests();
+        fetchStock();
+        fetchClients();
+      } else {
+        const data = await res.json();
+        showNotification(data.detail || 'Sync failed.', 'danger');
+      }
+    } catch (err) {
+      showNotification('Sync failed: backend is unreachable.', 'danger');
+    }
+  };
+
   // Render Helpers
   const activeFields = fields.filter(f => f.is_active);
   const requesterFields = activeFields.filter(f => f.filled_by === 'requester');
@@ -759,6 +819,14 @@ export default function App() {
                   Open Sheet
                 </a>
               )}
+              <button 
+                className="btn btn-secondary" 
+                onClick={triggerSyncFromSheets}
+                title="Pull updates from Google Spreadsheet to local database"
+              >
+                <Icons.Refresh />
+                Sync From Sheets
+              </button>
               <button 
                 className="btn btn-primary" 
                 onClick={triggerFullSync}
@@ -1409,190 +1477,231 @@ export default function App() {
             </p>
             
             <form onSubmit={handleCreateRequest}>
-              {requesterFields.map(field => {
-                const labelName = field.name;
-                const fieldId = `field_${field.id}`;
-                
-                // System field exclusions
-                if (labelName === "Requester's Name" || labelName === "Timestamp" || labelName === "Indent ID No.") {
-                  return null;
-                }
-
-                return (
-                  <div className="form-group" key={field.id}>
-                    <label htmlFor={fieldId}>{labelName}</label>
+              {/* 1. Common Fields (Client Name, Priority, Comments, etc.) */}
+              <div style={{ marginBottom: '2rem', paddingBottom: '1.5rem', borderBottom: '1px solid var(--border-color)' }}>
+                <h4 style={{ marginBottom: '1rem', fontStyle: 'italic' }}>Common Request Details</h4>
+                {requesterFields
+                  .filter(f => !['Timestamp', 'Indent ID No.', "Requester's Name", 'Required Material Name', 'Quantity', 'Unit', 'Expected Delivery Date', 'Item Code (If Applicable)'].includes(f.name))
+                  .map(field => {
+                    const labelName = field.name;
+                    const fieldId = `common_field_${field.id}`;
                     
-                    {field.type === 'select' ? (
-                      <select
-                        id={fieldId}
-                        className="form-control"
-                        value={newRequestValues[labelName] || ''}
-                        onChange={(e) => setNewRequestValues({
-                          ...newRequestValues,
-                          [labelName]: e.target.value
-                        })}
-                        required={labelName === 'Required Material Name' || labelName === 'Quantity'}
-                      >
-                        <option value="">Select Option</option>
-                        {(field.options || []).map((opt, i) => (
-                          <option key={i} value={opt}>{opt}</option>
-                        ))}
-                      </select>
-                    ) : field.type === 'number' ? (
-                      <input
-                        type="number"
-                        id={fieldId}
-                        className="form-control"
-                        placeholder="Quantity value"
-                        value={newRequestValues[labelName] || ''}
-                        onChange={(e) => setNewRequestValues({
-                          ...newRequestValues,
-                          [labelName]: e.target.value
-                        })}
-                        required={labelName === 'Required Material Name' || labelName === 'Quantity'}
-                      />
-                    ) : field.type === 'date' ? (
-                      <input
-                        type="date"
-                        id={fieldId}
-                        className="form-control"
-                        value={newRequestValues[labelName] || ''}
-                        onChange={(e) => setNewRequestValues({
-                          ...newRequestValues,
-                          [labelName]: e.target.value
-                        })}
-                        required={labelName === 'Required Material Name' || labelName === 'Quantity'}
-                      />
-                    ) : labelName === "Required Material Name" ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        <select
-                          id={fieldId}
-                          className="form-control"
-                          value={isNewMaterial ? '__NEW_MATERIAL__' : (newRequestValues[labelName] || '')}
-                          onChange={(e) => {
-                            if (e.target.value === '__NEW_MATERIAL__') {
-                              setIsNewMaterial(true);
-                              setNewRequestValues({
-                                ...newRequestValues,
-                                [labelName]: ''
-                              });
-                            } else {
-                              setIsNewMaterial(false);
-                              setNewRequestValues({
-                                ...newRequestValues,
-                                [labelName]: e.target.value
-                              });
-                            }
-                          }}
-                          required
-                        >
-                          <option value="">Select Material from Stock</option>
-                          {stock.filter(item => item.is_approved).map(item => (
-                            <option key={item.id} value={item.item_name}>
-                              {item.item_name} ({item.quantity} {item.unit} available)
-                            </option>
-                          ))}
-                          <option value="__NEW_MATERIAL__">[+ Add New Material...]</option>
-                        </select>
-                        
-                        {isNewMaterial && (
-                          <div>
-                            <input
-                              type="text"
+                    return (
+                      <div className="form-group" key={field.id}>
+                        <label htmlFor={fieldId}>{labelName}</label>
+                        {labelName === "Client Name" ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                            <select
+                              id={fieldId}
                               className="form-control"
-                              placeholder="Enter new material name"
-                              value={newRequestValues[labelName] || ''}
-                              onChange={(e) => setNewRequestValues({
-                                ...newRequestValues,
-                                [labelName]: e.target.value
-                              })}
-                              required
-                              style={{ marginTop: '0.25rem' }}
-                            />
-                            <small className="text-secondary" style={{ fontSize: '0.75rem', marginTop: '0.25rem', display: 'block', color: 'var(--color-pending)' }}>
-                              ⚠️ This material is not in stock. Submitting will flag it for Admin review/approval.
-                            </small>
+                              value={isNewClient ? '__NEW_CLIENT__' : (newRequestValues[labelName] || '')}
+                              onChange={(e) => {
+                                if (e.target.value === '__NEW_CLIENT__') {
+                                  setIsNewClient(true);
+                                  setNewRequestValues({ ...newRequestValues, [labelName]: '' });
+                                } else {
+                                  setIsNewClient(false);
+                                  setNewRequestValues({ ...newRequestValues, [labelName]: e.target.value });
+                                }
+                              }}
+                            >
+                              <option value="">Select Client</option>
+                              {clients.map(c => (
+                                <option key={c.id} value={c.name}>{c.name}</option>
+                              ))}
+                              <option value="__NEW_CLIENT__">[+ Add New Client...]</option>
+                            </select>
+                            {isNewClient && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.25rem', padding: '0.75rem', border: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
+                                <div>
+                                  <label style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem', display: 'block' }}>New Client Name</label>
+                                  <input
+                                    type="text"
+                                    className="form-control"
+                                    placeholder="Enter client name"
+                                    value={customClientName}
+                                    onChange={(e) => setCustomClientName(e.target.value)}
+                                    required
+                                  />
+                                </div>
+                                <div>
+                                  <label style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem', display: 'block' }}>Client Details (Optional)</label>
+                                  <input
+                                    type="text"
+                                    className="form-control"
+                                    placeholder="e.g. Contact Info, Location"
+                                    value={customClientDetails}
+                                    onChange={(e) => setCustomClientDetails(e.target.value)}
+                                  />
+                                </div>
+                              </div>
+                            )}
                           </div>
+                        ) : field.type === 'select' ? (
+                          <select
+                            id={fieldId}
+                            className="form-control"
+                            value={newRequestValues[labelName] || ''}
+                            onChange={(e) => setNewRequestValues({ ...newRequestValues, [labelName]: e.target.value })}
+                          >
+                            <option value="">Select Option</option>
+                            {(field.options || []).map((opt, i) => (
+                              <option key={i} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            id={fieldId}
+                            className="form-control"
+                            placeholder={`Enter ${labelName}`}
+                            value={newRequestValues[labelName] || ''}
+                            onChange={(e) => setNewRequestValues({ ...newRequestValues, [labelName]: e.target.value })}
+                          />
                         )}
                       </div>
-                    ) : labelName === "Client Name" ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        <select
-                          id={fieldId}
-                          className="form-control"
-                          value={isNewClient ? '__NEW_CLIENT__' : (newRequestValues[labelName] || '')}
-                          onChange={(e) => {
-                            if (e.target.value === '__NEW_CLIENT__') {
-                              setIsNewClient(true);
-                              setNewRequestValues({
-                                ...newRequestValues,
-                                [labelName]: ''
-                              });
-                            } else {
-                              setIsNewClient(false);
-                              setNewRequestValues({
-                                ...newRequestValues,
-                                [labelName]: e.target.value
-                              });
-                            }
-                          }}
-                          required={labelName === 'Required Material Name' || labelName === 'Quantity'}
+                    );
+                  })}
+              </div>
+
+              {/* 2. Multiple Requested Items List */}
+              <div>
+                <h4 style={{ marginBottom: '1rem', fontStyle: 'italic' }}>Requested Items ({itemsList.length})</h4>
+                
+                {itemsList.map((item, index) => (
+                  <div key={item.id} style={{ 
+                    padding: '1.5rem', 
+                    border: '1px solid var(--border-color)', 
+                    marginBottom: '1.5rem',
+                    background: '#faf9f6',
+                    position: 'relative'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                      <span style={{ fontWeight: '700', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        Item #{index + 1}
+                      </span>
+                      {itemsList.length > 1 && (
+                        <button 
+                          type="button" 
+                          className="btn btn-secondary" 
+                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}
+                          onClick={() => handleRemoveItemRow(item.id)}
                         >
-                          <option value="">Select Client</option>
-                          {clients.map(c => (
-                            <option key={c.id} value={c.name}>
-                              {c.name}
-                            </option>
-                          ))}
-                          <option value="__NEW_CLIENT__">[+ Add New Client...]</option>
-                        </select>
+                          Remove
+                        </button>
+                      )}
+                    </div>
+
+                    {requesterFields
+                      .filter(f => ['Required Material Name', 'Quantity', 'Unit', 'Expected Delivery Date', 'Item Code (If Applicable)'].includes(f.name))
+                      .map(field => {
+                        const labelName = field.name;
+                        const fieldId = `item_field_${item.id}_${field.id}`;
                         
-                        {isNewClient && (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.25rem', padding: '0.75rem', border: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
-                            <div>
-                              <label style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem', display: 'block' }}>New Client Name</label>
+                        return (
+                          <div className="form-group" key={field.id}>
+                            <label htmlFor={fieldId}>{labelName}</label>
+                            
+                            {labelName === "Required Material Name" ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                <select
+                                  id={fieldId}
+                                  className="form-control"
+                                  value={item.isNewMaterial ? '__NEW_MATERIAL__' : (item.values[labelName] || '')}
+                                  onChange={(e) => {
+                                    if (e.target.value === '__NEW_MATERIAL__') {
+                                      handleUpdateItemRowCustomFlag(item.id, true);
+                                      handleUpdateItemRowValue(item.id, labelName, '');
+                                    } else {
+                                      handleUpdateItemRowCustomFlag(item.id, false);
+                                      handleUpdateItemRowValue(item.id, labelName, e.target.value);
+                                    }
+                                  }}
+                                  required
+                                >
+                                  <option value="">Select Material from Stock</option>
+                                  {stock.filter(s => s.is_approved).map(s => (
+                                    <option key={s.id} value={s.item_name}>
+                                      {s.item_name} ({s.quantity} {s.unit} available)
+                                    </option>
+                                  ))}
+                                  <option value="__NEW_MATERIAL__">[+ Add New Material...]</option>
+                                </select>
+                                {item.isNewMaterial && (
+                                  <div>
+                                    <input
+                                      type="text"
+                                      className="form-control"
+                                      placeholder="Enter new material name"
+                                      value={item.customMaterialName}
+                                      onChange={(e) => handleUpdateItemRowCustomFlag(item.id, true, e.target.value)}
+                                      required
+                                      style={{ marginTop: '0.25rem' }}
+                                    />
+                                    <small className="text-secondary" style={{ fontSize: '0.75rem', marginTop: '0.25rem', display: 'block', color: 'var(--color-pending)' }}>
+                                      ⚠️ This material is not in stock. Submitting will flag it for Admin review/approval.
+                                    </small>
+                                  </div>
+                                )}
+                              </div>
+                            ) : field.type === 'number' ? (
+                              <input
+                                type="number"
+                                id={fieldId}
+                                className="form-control"
+                                placeholder="Quantity value"
+                                value={item.values[labelName] || ''}
+                                onChange={(e) => handleUpdateItemRowValue(item.id, labelName, e.target.value)}
+                                required={labelName === 'Quantity'}
+                              />
+                            ) : field.type === 'date' ? (
+                              <input
+                                type="date"
+                                id={fieldId}
+                                className="form-control"
+                                value={item.values[labelName] || ''}
+                                onChange={(e) => handleUpdateItemRowValue(item.id, labelName, e.target.value)}
+                              />
+                            ) : field.type === 'select' ? (
+                              <select
+                                id={fieldId}
+                                className="form-control"
+                                value={item.values[labelName] || ''}
+                                onChange={(e) => handleUpdateItemRowValue(item.id, labelName, e.target.value)}
+                              >
+                                <option value="">Select Option</option>
+                                {(field.options || []).map((opt, i) => (
+                                  <option key={i} value={opt}>{opt}</option>
+                                ))}
+                              </select>
+                            ) : (
                               <input
                                 type="text"
+                                id={fieldId}
                                 className="form-control"
-                                placeholder="Enter client name"
-                                value={customClientName}
-                                onChange={(e) => setCustomClientName(e.target.value)}
-                                required
+                                placeholder={`Enter ${labelName}`}
+                                value={item.values[labelName] || ''}
+                                onChange={(e) => handleUpdateItemRowValue(item.id, labelName, e.target.value)}
                               />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem', display: 'block' }}>Client Details (Optional)</label>
-                              <input
-                                type="text"
-                                className="form-control"
-                                placeholder="e.g. Contact Info, Location"
-                                value={customClientDetails}
-                                onChange={(e) => setCustomClientDetails(e.target.value)}
-                              />
-                            </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    ) : (
-                      <input
-                        type="text"
-                        id={fieldId}
-                        className="form-control"
-                        placeholder={`Enter ${labelName}`}
-                        value={newRequestValues[labelName] || ''}
-                        onChange={(e) => setNewRequestValues({
-                          ...newRequestValues,
-                          [labelName]: e.target.value
-                        })}
-                        required={labelName === 'Required Material Name' || labelName === 'Quantity'}
-                      />
-                    )}
+                        );
+                      })}
                   </div>
-                );
-              })}
+                ))}
+                
+                <button 
+                  type="button" 
+                  className="btn btn-secondary" 
+                  style={{ width: '100%', marginBottom: '1.5rem', background: '#ffffff', color: '#000000', borderColor: '#000000' }}
+                  onClick={handleAddItemRow}
+                >
+                  + Add Another Material Item
+                </button>
+              </div>
 
               <button type="submit" className="btn btn-primary" style={{width: '100%', marginTop: '1rem'}}>
-                Submit Request
+                Submit All Requests
               </button>
             </form>
           </div>
@@ -1909,7 +2018,15 @@ export default function App() {
                 if (field.name === 'Timestamp' || field.name === 'Indent ID No.' || field.name === 'Requester\'s Name') {
                   return null;
                 }
-                const value = selectedRequest.values[field.name];
+                let value = selectedRequest.values[field.name];
+
+                // "Stock As on Date" actually shows the current stock quantity
+                // for the requested material, not a date. Default to 0 if unknown.
+                if (field.name === 'Stock As on Date') {
+                  const materialName = (selectedRequest.values['Required Material Name'] || '').trim().toLowerCase();
+                  const stockItem = stock.find(s => s.item_name.trim().toLowerCase() === materialName);
+                  value = stockItem ? `${stockItem.quantity} ${stockItem.unit || ''}`.trim() : '0';
+                }
                 
                 return (
                   <div className={`detail-view ${field.type === 'select' && field.name.includes('Comments') ? 'modal-grid-full' : ''}`} key={field.id}>
@@ -1967,7 +2084,19 @@ export default function App() {
                   return (
                     <div className="form-group" key={field.id}>
                       <label htmlFor={fieldId}>{labelName}</label>
-                      {field.type === 'select' ? (
+                      {labelName === 'Stock As on Date' ? (
+                        <input
+                          type="text"
+                          id={fieldId}
+                          className="form-control"
+                          disabled
+                          value={(() => {
+                            const materialName = (adminEditValues['Required Material Name'] || selectedRequest?.values['Required Material Name'] || '').trim().toLowerCase();
+                            const stockItem = stock.find(s => s.item_name.trim().toLowerCase() === materialName);
+                            return stockItem ? `${stockItem.quantity} ${stockItem.unit || ''}`.trim() : '0';
+                          })()}
+                        />
+                      ) : field.type === 'select' ? (
                         <select
                           id={fieldId}
                           className="form-control"
